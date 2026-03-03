@@ -40,11 +40,44 @@ Requirements:
 - Python 3.10+
 - `gemini` CLI installed and authenticated
 
-Optional convenience:
+### Manual install (recommended)
 
 ```bash
-ln -s "$(pwd)/scripts/gemini_delegate.py" ~/.local/bin/gemini-delegate
-ln -s "$(pwd)/scripts/gemini_fanout.py" ~/.local/bin/gemini-fanout
+git clone https://github.com/PavelPancocha/gemini-delegate.git
+cd gemini-delegate
+
+mkdir -p ~/.agents/skills/gemini-delegate/scripts ~/.local/bin
+cp SKILL.md ~/.agents/skills/gemini-delegate/SKILL.md
+cp scripts/gemini_delegate.py ~/.agents/skills/gemini-delegate/scripts/gemini_delegate.py
+cp scripts/gemini_fanout.py ~/.agents/skills/gemini-delegate/scripts/gemini_fanout.py
+chmod +x ~/.agents/skills/gemini-delegate/scripts/gemini_delegate.py ~/.agents/skills/gemini-delegate/scripts/gemini_fanout.py
+
+ln -sfn ~/.agents/skills/gemini-delegate/scripts/gemini_delegate.py ~/.local/bin/gemini-delegate
+ln -sfn ~/.agents/skills/gemini-delegate/scripts/gemini_fanout.py ~/.local/bin/gemini-fanout
+
+gemini-delegate --help
+gemini-fanout --help
+```
+
+### One-shot prompt for Codex (install from GitHub)
+
+Paste this into Codex:
+
+```text
+Install the `gemini-delegate` skill from https://github.com/PavelPancocha/gemini-delegate into my user scope only.
+
+Requirements:
+- Create/update: ~/.agents/skills/gemini-delegate/
+- Place SKILL.md at ~/.agents/skills/gemini-delegate/SKILL.md
+- Place scripts in ~/.agents/skills/gemini-delegate/scripts/
+- Make scripts executable
+- Create/update symlinks:
+  - ~/.local/bin/gemini-delegate -> ~/.agents/skills/gemini-delegate/scripts/gemini_delegate.py
+  - ~/.local/bin/gemini-fanout -> ~/.agents/skills/gemini-delegate/scripts/gemini_fanout.py
+- Do not modify any project/repo files
+- Verify with:
+  - gemini-delegate --help
+  - gemini-fanout --help
 ```
 
 ## Quick start
@@ -93,7 +126,7 @@ echo "TASK: ..." \
 
 ## Concurrency throttle
 
-By default, requests are globally paced to one Gemini request start every 10 seconds across processes.
+By default, requests are globally paced to one Gemini request start every 20 seconds across processes.
 
 This protects against provider-side concurrent request limits, especially when using `gemini_fanout.py`.
 
