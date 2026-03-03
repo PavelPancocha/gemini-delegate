@@ -81,6 +81,8 @@ Both scripts expose retry controls for transient provider instability:
 - `--retry-window-sec`
 - `--retry-initial-backoff-sec`
 - `--retry-max-backoff-sec`
+- `--min-start-interval-sec`
+- `--rate-limit-file`
 
 Example:
 
@@ -88,6 +90,12 @@ Example:
 echo "TASK: ..." \
   | scripts/gemini_delegate.py --mode patch --timeout-sec 60 --retry-window-sec 900
 ```
+
+## Concurrency throttle
+
+By default, requests are globally paced to one Gemini request start every 10 seconds across processes.
+
+This protects against provider-side concurrent request limits, especially when using `gemini_fanout.py`.
 
 ## Notes
 

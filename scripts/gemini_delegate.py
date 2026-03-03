@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import re
@@ -127,6 +128,34 @@ def _run_once(cmd: list[str], payload: str, timeout_sec: int) -> tuple[int, str,
     return p.returncode, p.stdout, p.stderr
 
 
+def _reserve_rate_limit_slot(min_start_interval_sec: float, rate_limit_file: str) -> None:
+    if min_start_interval_sec <= 0:
+        return
+    parent = os.path.dirname(rate_limit_file)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(rate_limit_file, "a+", encoding="utf-8") as state:
+        fcntl.flock(state.fileno(), fcntl.LOCK_EX)
+        state.seek(0)
+        raw = state.read().strip()
+        last_ts = float(raw) if raw else 0.0
+        now = time.time()
+        wait_sec = min_start_interval_sec - (now - last_ts)
+        if wait_sec > 0:
+            print(
+                f"INFO: global rate limit active, waiting {wait_sec:.1f}s before next Gemini request.",
+                file=sys.stderr,
+            )
+            time.sleep(wait_sec)
+            now = time.time()
+        state.seek(0)
+        state.truncate()
+        state.write(f"{now:.6f}\n")
+        state.flush()
+        os.fsync(state.fileno())
+        fcntl.flock(state.fileno(), fcntl.LOCK_UN)
+
+
 def _unknown_option(stderr: str, stdout: str, opt_hint: str) -> bool:
     msg = f"{stderr}\n{stdout}".lower()
     return ("unknown option" in msg or "unrecognized option" in msg) and opt_hint.lower() in msg
@@ -194,11 +223,14 @@ def _run_gemini_with_retries(
     retry_window_sec: int,
     retry_initial_backoff_sec: float,
     retry_max_backoff_sec: float,
+    min_start_interval_sec: float,
+    rate_limit_file: str,
 ) -> tuple[int, str, str]:
     start = time.monotonic()
     attempt = 1
 
     while True:
+        _reserve_rate_limit_slot(min_start_interval_sec=min_start_interval_sec, rate_limit_file=rate_limit_file)
         rc, out, err = _run_gemini_once(query, payload, model, timeout_sec)
         if rc == 0:
             return rc, out, err
@@ -249,6 +281,17 @@ def main() -> int:
         default=60.0,
         help="Maximum retry backoff in seconds (default: 60).",
     )
+    ap.add_argument(
+        "--min-start-interval-sec",
+        type=float,
+        default=float(os.environ.get("GEMINI_DELEGATE_MIN_START_INTERVAL_SEC", "10")),
+        help="Minimum interval between Gemini request starts across processes (default: 10).",
+    )
+    ap.add_argument(
+        "--rate-limit-file",
+        default=os.path.expanduser("~/.cache/gemini-delegate/rate_limit.state"),
+        help="Shared state file for global request pacing.",
+    )
     ap.add_argument("--files", nargs="*", default=[], help="Inline these files into the payload (paths relative to CWD).")
     ap.add_argument("--max-file-bytes", type=int, default=200_000)
     ap.add_argument("--extract-diff", action="store_true", help="Patch mode: print ONLY raw unified diff (strip fences).")
@@ -270,6 +313,8 @@ def main() -> int:
         retry_window_sec=args.retry_window_sec,
         retry_initial_backoff_sec=args.retry_initial_backoff_sec,
         retry_max_backoff_sec=args.retry_max_backoff_sec,
+        min_start_interval_sec=args.min_start_interval_sec,
+        rate_limit_file=args.rate_limit_file,
     )
     if rc != 0:
         if err.strip():

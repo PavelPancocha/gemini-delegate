@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 from dataclasses import dataclass
 
@@ -25,6 +26,8 @@ async def run_one(
     retry_window_sec: int,
     retry_initial_backoff_sec: float,
     retry_max_backoff_sec: float,
+    min_start_interval_sec: float,
+    rate_limit_file: str,
 ) -> JobResult:
     cmd = [
         "gemini-delegate",
@@ -40,6 +43,10 @@ async def run_one(
         str(retry_initial_backoff_sec),
         "--retry-max-backoff-sec",
         str(retry_max_backoff_sec),
+        "--min-start-interval-sec",
+        str(min_start_interval_sec),
+        "--rate-limit-file",
+        rate_limit_file,
     ]
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -75,6 +82,8 @@ async def runner(
     retry_window_sec: int,
     retry_initial_backoff_sec: float,
     retry_max_backoff_sec: float,
+    min_start_interval_sec: float,
+    rate_limit_file: str,
 ) -> list[JobResult]:
     sem = asyncio.Semaphore(concurrency)
 
@@ -88,6 +97,8 @@ async def runner(
                 retry_window_sec,
                 retry_initial_backoff_sec,
                 retry_max_backoff_sec,
+                min_start_interval_sec,
+                rate_limit_file,
             )
 
     tasks = [asyncio.create_task(wrapped(job)) for job in jobs]
@@ -103,6 +114,12 @@ def main() -> int:
     ap.add_argument("--retry-window-sec", type=int, default=600)
     ap.add_argument("--retry-initial-backoff-sec", type=float, default=5.0)
     ap.add_argument("--retry-max-backoff-sec", type=float, default=60.0)
+    ap.add_argument("--min-start-interval-sec", type=float, default=10.0)
+    ap.add_argument(
+        "--rate-limit-file",
+        default=os.path.expanduser("~/.cache/gemini-delegate/rate_limit.state"),
+        help="Shared state file for global request pacing.",
+    )
     args = ap.parse_args()
 
     payload = sys.stdin.read()
@@ -120,6 +137,8 @@ def main() -> int:
             args.retry_window_sec,
             args.retry_initial_backoff_sec,
             args.retry_max_backoff_sec,
+            args.min_start_interval_sec,
+            args.rate_limit_file,
         )
     )
 
