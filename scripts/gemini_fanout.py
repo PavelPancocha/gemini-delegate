@@ -114,13 +114,16 @@ def main() -> int:
     ap.add_argument("--retry-window-sec", type=int, default=600)
     ap.add_argument("--retry-initial-backoff-sec", type=float, default=5.0)
     ap.add_argument("--retry-max-backoff-sec", type=float, default=60.0)
-    ap.add_argument("--min-start-interval-sec", type=float, default=10.0)
+    ap.add_argument("--min-start-interval-sec", type=float, default=20.0)
     ap.add_argument(
         "--rate-limit-file",
         default=os.path.expanduser("~/.cache/gemini-delegate/rate_limit.state"),
         help="Shared state file for global request pacing.",
     )
     args = ap.parse_args()
+    if args.concurrency < 1 or args.concurrency > 4:
+        print("ERROR: --concurrency must be between 1 and 4.", file=sys.stderr)
+        return 2
 
     payload = sys.stdin.read()
     if not payload.strip():

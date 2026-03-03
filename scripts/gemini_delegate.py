@@ -284,8 +284,8 @@ def main() -> int:
     ap.add_argument(
         "--min-start-interval-sec",
         type=float,
-        default=float(os.environ.get("GEMINI_DELEGATE_MIN_START_INTERVAL_SEC", "10")),
-        help="Minimum interval between Gemini request starts across processes (default: 10).",
+        default=float(os.environ.get("GEMINI_DELEGATE_MIN_START_INTERVAL_SEC", "20")),
+        help="Minimum interval between Gemini request starts across processes (default: 20).",
     )
     ap.add_argument(
         "--rate-limit-file",
