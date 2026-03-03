@@ -1,41 +1,99 @@
 # gemini-delegate
 
-Headless Gemini CLI delegation wrappers for Codex-style workflows.
+A small, patch-first delegation layer for using Gemini CLI from Codex/CLI workflows.
 
-- `gemini_delegate.py`: single delegated run (`patch`, `review`, `tests`, `alt`)
-- `gemini_fanout.py`: run multiple delegate roles in parallel and print consolidated output
+## Motivation
 
-## Safety model
+When you use LLMs in coding workflows, two problems show up quickly:
 
-- Gemini never edits files directly.
-- Patch mode requires Gemini to output a single fenced `diff` block.
-- You apply patches yourself (`git apply --check` then `git apply`).
+1. You want help from another model, but you do not want that model to edit your files directly.
+2. You want to ask for multiple perspectives (patch, review, tests, alternatives) without manually running four separate prompts.
 
-## Quick usage
+`gemini-delegate` addresses both:
+
+- Gemini runs headlessly from stdin payloads.
+- Gemini outputs diffs; your local workflow applies changes.
+- Parallel fan-out runs gather multiple roles in one command.
+
+## What it does
+
+- `scripts/gemini_delegate.py`
+  - Single delegated run in one of four modes: `patch`, `review`, `tests`, `alt`
+  - Supports `--files` to inline local file content into the prompt payload
+  - In `patch` mode, supports `--extract-diff` to emit raw unified diff only
+  - Retries transient provider failures (timeouts/capacity/rate-limit)
+
+- `scripts/gemini_fanout.py`
+  - Launches multiple delegate modes in parallel
+  - Prints one consolidated report with return code and output per role
+
+## Safety boundary
+
+- Gemini does **not** edit files directly.
+- Patch mode requires one fenced `diff` block.
+- You apply edits explicitly (`git apply --check` then `git apply`).
+
+## Install
+
+Requirements:
+
+- Python 3.10+
+- `gemini` CLI installed and authenticated
+
+Optional convenience:
 
 ```bash
-echo "TASK: list edge cases" | scripts/gemini_delegate.py --mode review
+ln -s "$(pwd)/scripts/gemini_delegate.py" ~/.local/bin/gemini-delegate
+ln -s "$(pwd)/scripts/gemini_fanout.py" ~/.local/bin/gemini-fanout
 ```
 
+## Quick start
+
+Single review pass:
+
 ```bash
-cat payload.txt | scripts/gemini_delegate.py --mode patch --files path/to/file.py --extract-diff > /tmp/patch.diff
+echo "TASK: list 3 edge cases for CSV quoted commas" \
+  | scripts/gemini_delegate.py --mode review
+```
+
+Patch proposal and apply:
+
+```bash
+cat payload.txt \
+  | scripts/gemini_delegate.py --mode patch --files path/to/file.py --extract-diff > /tmp/patch.diff
+
 git apply --check /tmp/patch.diff
 git apply /tmp/patch.diff
 ```
 
+Parallel fan-out:
+
 ```bash
-cat payload.txt | scripts/gemini_fanout.py --jobs patch review tests alt --concurrency 3
+cat payload.txt \
+  | scripts/gemini_fanout.py --jobs patch review tests alt --concurrency 3
 ```
 
-## Retries
+## Retry controls
 
-Both wrappers support retry controls for transient Gemini capacity/timeouts:
+Both scripts expose retry controls for transient provider instability:
 
+- `--timeout-sec`
 - `--retry-window-sec`
 - `--retry-initial-backoff-sec`
 - `--retry-max-backoff-sec`
 
-## Requirements
+Example:
 
-- Python 3.10+
-- `gemini` CLI installed and authenticated
+```bash
+echo "TASK: ..." \
+  | scripts/gemini_delegate.py --mode patch --timeout-sec 60 --retry-window-sec 900
+```
+
+## Notes
+
+- If provider capacity is unavailable, retries continue until `--retry-window-sec` is exhausted.
+- Path formatting of model-produced diffs can vary; apply with `-p0` or default strip as needed.
+
+## License
+
+MIT — see [LICENSE](./LICENSE)
