@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from typing import Final, Iterable
 
@@ -53,6 +54,7 @@ TRANSIENT_ERROR_RE = re.compile(
     r"timeout|timed out|temporar(?:y|ily) unavailable|service unavailable|econnreset|etimedout)",
     re.IGNORECASE,
 )
+CAPACITY_ERROR_RE = re.compile(r"(model_capacity_exhausted|no capacity available)", re.IGNORECASE)
 
 
 def _read_file(path: str, max_bytes: int) -> str:
@@ -117,15 +119,58 @@ def _cmd_with_flags(query: str, model: str, include_json: bool, include_plan: bo
     return cmd
 
 
-def _run_once(cmd: list[str], payload: str, timeout_sec: int) -> tuple[int, str, str]:
-    p = subprocess.run(
+def _run_once(cmd: list[str], payload: str, timeout_sec: int, live_stderr: bool) -> tuple[int, str, str]:
+    process = subprocess.Popen(
         cmd,
-        input=payload,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        capture_output=True,
-        timeout=timeout_sec,
+        bufsize=1,
     )
-    return p.returncode, p.stdout, p.stderr
+
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+
+    def _read_stream(stream, sink: list[str], stream_name: str) -> None:
+        for line in iter(stream.readline, ""):
+            sink.append(line)
+            if live_stderr and stream_name == "stderr":
+                print(f"INFO: gemini stderr: {line.rstrip()}", file=sys.stderr)
+        stream.close()
+
+    stdout_thread = threading.Thread(
+        target=_read_stream,
+        args=(process.stdout, stdout_lines, "stdout"),
+        daemon=True,
+    )
+    stderr_thread = threading.Thread(
+        target=_read_stream,
+        args=(process.stderr, stderr_lines, "stderr"),
+        daemon=True,
+    )
+    stdout_thread.start()
+    stderr_thread.start()
+
+    if process.stdin:
+        process.stdin.write(payload)
+        process.stdin.close()
+
+    try:
+        process.wait(timeout=timeout_sec)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+        stdout_thread.join(timeout=1)
+        stderr_thread.join(timeout=1)
+        timeout_msg = f"timeout after {timeout_sec}s"
+        stderr_text = "".join(stderr_lines).rstrip()
+        stderr_text = f"{stderr_text}\n{timeout_msg}" if stderr_text else timeout_msg
+        return 124, "".join(stdout_lines), stderr_text
+
+    stdout_thread.join(timeout=1)
+    stderr_thread.join(timeout=1)
+    return process.returncode, "".join(stdout_lines), "".join(stderr_lines)
 
 
 def _reserve_rate_limit_slot(min_start_interval_sec: float, rate_limit_file: str) -> None:
@@ -161,7 +206,14 @@ def _unknown_option(stderr: str, stdout: str, opt_hint: str) -> bool:
     return ("unknown option" in msg or "unrecognized option" in msg) and opt_hint.lower() in msg
 
 
-def _run_gemini_once(query: str, payload: str, model: str, timeout_sec: int) -> tuple[int, str, str]:
+def _run_gemini_once(
+    query: str,
+    payload: str,
+    model: str,
+    timeout_sec: int,
+    live_stderr: bool,
+    verbose: bool,
+) -> tuple[int, str, str]:
     # Try strictest invocation first: model + read-only tools + json output.
     variants = [
         (True, True),   # json + plan
@@ -172,12 +224,15 @@ def _run_gemini_once(query: str, payload: str, model: str, timeout_sec: int) -> 
     last: tuple[int, str, str] = (1, "", "")
     for use_json, use_plan in variants:
         cmd = _cmd_with_flags(query, model, include_json=use_json, include_plan=use_plan)
+        if verbose:
+            print(
+                f"INFO: invoking Gemini (model={model}, json={use_json}, plan={use_plan})",
+                file=sys.stderr,
+            )
         try:
-            rc, out, err = _run_once(cmd, payload, timeout_sec)
+            rc, out, err = _run_once(cmd, payload, timeout_sec, live_stderr=live_stderr)
         except FileNotFoundError:
             return 127, "", "`gemini` not found on PATH."
-        except subprocess.TimeoutExpired:
-            return 124, "", f"timeout after {timeout_sec}s"
 
         last = (rc, out, err)
         if rc != 0:
@@ -208,6 +263,10 @@ def _is_transient_failure(rc: int, out: str, err: str) -> bool:
     return bool(TRANSIENT_ERROR_RE.search(f"{err}\n{out}"))
 
 
+def _is_capacity_failure(out: str, err: str) -> bool:
+    return bool(CAPACITY_ERROR_RE.search(f"{err}\n{out}"))
+
+
 def _first_line(text: str) -> str:
     stripped = text.strip()
     if not stripped:
@@ -215,25 +274,69 @@ def _first_line(text: str) -> str:
     return stripped.splitlines()[0]
 
 
+def _summarize_error(rc: int, out: str, err: str) -> str:
+    combined = f"{err}\n{out}"
+    message_match = re.search(r'"message":\s*"([^"]+)"', combined)
+    if message_match:
+        return message_match.group(1)
+    status_match = re.search(r"\bstatus\b[^0-9]*(\d{3})", combined, re.IGNORECASE)
+    if status_match:
+        return f"status {status_match.group(1)}"
+    return _first_line(err) or _first_line(out) or f"exit code {rc}"
+
+
 def _run_gemini_with_retries(
     query: str,
     payload: str,
     model: str,
+    fallback_model: str | None,
     timeout_sec: int,
     retry_window_sec: int,
     retry_initial_backoff_sec: float,
     retry_max_backoff_sec: float,
     min_start_interval_sec: float,
     rate_limit_file: str,
+    live_stderr: bool,
+    verbose: bool,
 ) -> tuple[int, str, str]:
     start = time.monotonic()
     attempt = 1
+    active_model = model
+    fallback_used = False
+    fallback_reason = ""
 
     while True:
         _reserve_rate_limit_slot(min_start_interval_sec=min_start_interval_sec, rate_limit_file=rate_limit_file)
-        rc, out, err = _run_gemini_once(query, payload, model, timeout_sec)
+        if verbose:
+            print(f"INFO: Gemini attempt {attempt} (model={active_model})", file=sys.stderr)
+        rc, out, err = _run_gemini_once(
+            query=query,
+            payload=payload,
+            model=active_model,
+            timeout_sec=timeout_sec,
+            live_stderr=live_stderr,
+            verbose=verbose,
+        )
         if rc == 0:
+            if fallback_used and verbose:
+                print(
+                    f"INFO: model fallback was used ({model} -> {active_model}) due to {fallback_reason}. "
+                    "Output quality may differ.",
+                    file=sys.stderr,
+                )
             return rc, out, err
+
+        if fallback_model and active_model != fallback_model and _is_capacity_failure(out, err):
+            if verbose:
+                print(
+                    f"INFO: capacity issue on model {active_model}; switching to fallback model {fallback_model}.",
+                    file=sys.stderr,
+                )
+            fallback_used = True
+            fallback_reason = "capacity limits on primary model"
+            active_model = fallback_model
+            attempt += 1
+            continue
 
         elapsed = time.monotonic() - start
         remaining = retry_window_sec - elapsed
@@ -241,7 +344,7 @@ def _run_gemini_with_retries(
             return rc, out, err
 
         wait_sec = min(retry_initial_backoff_sec * (2 ** (attempt - 1)), retry_max_backoff_sec, remaining)
-        reason = _first_line(err) or _first_line(out) or f"exit code {rc}"
+        reason = _summarize_error(rc, out, err)
         print(
             f"INFO: transient Gemini failure on attempt {attempt}: {reason}. "
             f"Retrying in {wait_sec:.1f}s (remaining retry window {remaining:.1f}s).",
@@ -262,6 +365,11 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Codex -> Gemini CLI delegate wrapper (headless).")
     ap.add_argument("--mode", choices=sorted(MODE_TO_QUERY.keys()), default="review")
     ap.add_argument("--model", default="pro", help="Gemini model alias/name (default: pro)")
+    ap.add_argument(
+        "--fallback-model",
+        default=os.environ.get("GEMINI_DELEGATE_FALLBACK_MODEL", "auto"),
+        help="Fallback model when the primary model has capacity errors (default: auto).",
+    )
     ap.add_argument("--timeout-sec", type=int, default=900)
     ap.add_argument(
         "--retry-window-sec",
@@ -295,6 +403,12 @@ def main() -> int:
     ap.add_argument("--files", nargs="*", default=[], help="Inline these files into the payload (paths relative to CWD).")
     ap.add_argument("--max-file-bytes", type=int, default=200_000)
     ap.add_argument("--extract-diff", action="store_true", help="Patch mode: print ONLY raw unified diff (strip fences).")
+    ap.add_argument(
+        "--no-live-stderr",
+        action="store_true",
+        help="Do not stream gemini stderr logs while requests are running.",
+    )
+    ap.add_argument("--quiet", action="store_true", help="Reduce delegate diagnostics.")
     args = ap.parse_args()
 
     stdin_payload = sys.stdin.read()
@@ -304,17 +418,22 @@ def main() -> int:
 
     query = MODE_TO_QUERY[args.mode]
     payload = _build_payload(stdin_payload, args.files, args.max_file_bytes)
+    verbose = not args.quiet
+    live_stderr = not args.no_live_stderr
 
     rc, out, err = _run_gemini_with_retries(
         query=query,
         payload=payload,
         model=args.model,
+        fallback_model=args.fallback_model,
         timeout_sec=args.timeout_sec,
         retry_window_sec=args.retry_window_sec,
         retry_initial_backoff_sec=args.retry_initial_backoff_sec,
         retry_max_backoff_sec=args.retry_max_backoff_sec,
         min_start_interval_sec=args.min_start_interval_sec,
         rate_limit_file=args.rate_limit_file,
+        live_stderr=live_stderr,
+        verbose=verbose,
     )
     if rc != 0:
         if err.strip():

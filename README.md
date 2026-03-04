@@ -117,6 +117,13 @@ Both scripts expose retry controls for transient provider instability:
 - `--min-start-interval-sec`
 - `--rate-limit-file`
 
+`gemini_delegate.py` also supports model fallback:
+
+- `--model` (primary, default `pro`)
+- `--fallback-model` (used on capacity failures, default `auto`)
+
+When fallback is used, the wrapper prints an explicit warning that output quality may differ from `pro`.
+
 Example:
 
 ```bash
