@@ -12,8 +12,10 @@ import threading
 import time
 from typing import Final, Iterable
 
+DEFAULT_MODEL: Final[str] = "gemini-3-flash-preview"
+
 QUERY_PATCH: Final[str] = (
-    "You are a delegated senior engineer.\n"
+    "You are a delegated senior engineer working on a well-scoped helper task.\n"
     "Use ONLY the provided payload as truth.\n"
     "OUTPUT RULES (MANDATORY):\n"
     "1) Output ONLY a unified diff in exactly ONE fenced block:\n"
@@ -24,21 +26,33 @@ QUERY_PATCH: Final[str] = (
 )
 
 QUERY_REVIEW: Final[str] = (
-    "You are a delegated staff engineer reviewer.\n"
+    "You are a delegated staff engineer reviewer for a well-specified helper task.\n"
     "Use ONLY the provided payload as truth.\n"
     "Return concise bullet points: risks, edge cases, missing requirements, suggested improvements.\n"
 )
 
 QUERY_TESTS: Final[str] = (
-    "You are a delegated test planner.\n"
+    "You are a delegated test planner for a well-specified helper task.\n"
     "Use ONLY the provided payload as truth.\n"
     "Return concise bullet points: concrete tests to add/run, including commands where appropriate.\n"
 )
 
 QUERY_ALT: Final[str] = (
-    "You are a delegated architect.\n"
+    "You are a delegated architect for a well-specified helper task.\n"
     "Use ONLY the provided payload as truth.\n"
     "Return 2-3 alternative approaches with tradeoffs. Be concrete.\n"
+)
+
+QUERY_RESEARCH: Final[str] = (
+    "You are a delegated research helper for a well-specified, chunked task.\n"
+    "Use ONLY the provided payload as truth.\n"
+    "Return concise bullet points covering findings, open questions, constraints, and a recommended next step.\n"
+)
+
+QUERY_ANSWER: Final[str] = (
+    "You are a delegated answer helper for a well-specified, chunked task.\n"
+    "Use ONLY the provided payload as truth.\n"
+    "Return a concise plain-text answer. Use bullet points only when they improve clarity.\n"
 )
 
 MODE_TO_QUERY = {
@@ -46,6 +60,8 @@ MODE_TO_QUERY = {
     "review": QUERY_REVIEW,
     "tests": QUERY_TESTS,
     "alt": QUERY_ALT,
+    "research": QUERY_RESEARCH,
+    "answer": QUERY_ANSWER,
 }
 
 DIFF_FENCE_RE = re.compile(r"```diff\s*\n(.*?)\n```", re.DOTALL)
@@ -361,55 +377,68 @@ def _extract_diff(text: str) -> str | None:
     return m.group(1).rstrip() + "\n"
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description="Codex -> Gemini CLI delegate wrapper (headless).")
-    ap.add_argument("--mode", choices=sorted(MODE_TO_QUERY.keys()), default="review")
-    ap.add_argument("--model", default="pro", help="Gemini model alias/name (default: pro)")
-    ap.add_argument(
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Codex -> Gemini CLI delegate wrapper (headless).")
+    parser.add_argument("--mode", choices=sorted(MODE_TO_QUERY.keys()), default="review")
+    parser.add_argument(
+        "--model",
+        default=DEFAULT_MODEL,
+        help=f"Gemini model alias/name (default: {DEFAULT_MODEL})",
+    )
+    parser.add_argument(
         "--fallback-model",
         default=os.environ.get("GEMINI_DELEGATE_FALLBACK_MODEL", "auto"),
         help="Fallback model when the primary model has capacity errors (default: auto).",
     )
-    ap.add_argument("--timeout-sec", type=int, default=900)
-    ap.add_argument(
+    parser.add_argument("--timeout-sec", type=int, default=900)
+    parser.add_argument(
         "--retry-window-sec",
         type=int,
         default=600,
         help="Retry transient failures for up to this many seconds (default: 600).",
     )
-    ap.add_argument(
+    parser.add_argument(
         "--retry-initial-backoff-sec",
         type=float,
         default=5.0,
         help="Initial retry backoff in seconds for transient failures (default: 5).",
     )
-    ap.add_argument(
+    parser.add_argument(
         "--retry-max-backoff-sec",
         type=float,
         default=60.0,
         help="Maximum retry backoff in seconds (default: 60).",
     )
-    ap.add_argument(
+    parser.add_argument(
         "--min-start-interval-sec",
         type=float,
         default=float(os.environ.get("GEMINI_DELEGATE_MIN_START_INTERVAL_SEC", "20")),
         help="Minimum interval between Gemini request starts across processes (default: 20).",
     )
-    ap.add_argument(
+    parser.add_argument(
         "--rate-limit-file",
         default=os.path.expanduser("~/.cache/gemini-delegate/rate_limit.state"),
         help="Shared state file for global request pacing.",
     )
-    ap.add_argument("--files", nargs="*", default=[], help="Inline these files into the payload (paths relative to CWD).")
-    ap.add_argument("--max-file-bytes", type=int, default=200_000)
-    ap.add_argument("--extract-diff", action="store_true", help="Patch mode: print ONLY raw unified diff (strip fences).")
-    ap.add_argument(
+    parser.add_argument(
+        "--files",
+        nargs="*",
+        default=[],
+        help="Inline these files into the payload (paths relative to CWD).",
+    )
+    parser.add_argument("--max-file-bytes", type=int, default=200_000)
+    parser.add_argument("--extract-diff", action="store_true", help="Patch mode: print ONLY raw unified diff (strip fences).")
+    parser.add_argument(
         "--no-live-stderr",
         action="store_true",
         help="Do not stream gemini stderr logs while requests are running.",
     )
-    ap.add_argument("--quiet", action="store_true", help="Reduce delegate diagnostics.")
-    args = ap.parse_args()
+    parser.add_argument("--quiet", action="store_true", help="Reduce delegate diagnostics.")
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
 
     stdin_payload = sys.stdin.read()
     if not stdin_payload.strip():

@@ -1,24 +1,33 @@
 # gemini-delegate
 
-A small, patch-first delegation layer for using Gemini CLI from Codex/CLI workflows.
+A small helper-first delegation layer for using Gemini CLI from Codex/CLI workflows.
 
 ## Motivation
 
 When you use LLMs in coding workflows, two problems show up quickly:
 
-1. You want help from another model, but you do not want that model to edit your files directly.
-2. You want to ask for multiple perspectives (patch, review, tests, alternatives) without manually running four separate prompts.
+1. You want a fast second opinion or research pass, but you do not want that model to edit your files directly.
+2. You want to ask for multiple focused perspectives (answer, research, review, tests, alternatives, patch) without manually running separate prompts.
 
 `gemini-delegate` addresses both:
 
 - Gemini runs headlessly from stdin payloads.
+- Gemini stays in a helper lane: answer, research, review, tests, alternatives, or scoped patch proposals.
 - Gemini outputs diffs; your local workflow applies changes.
 - Parallel fan-out runs gather multiple roles in one command.
+
+The intended use is narrow:
+
+- well-specified, chunked-down tasks
+- bounded research questions
+- concrete patch proposals for explicitly scoped files
+
+It is not intended to be the primary executor for broad, ambiguous implementation work.
 
 ## What it does
 
 - `scripts/gemini_delegate.py`
-  - Single delegated run in one of four modes: `patch`, `review`, `tests`, `alt`
+  - Single delegated run in one of six modes: `patch`, `review`, `tests`, `alt`, `research`, `answer`
   - Supports `--files` to inline local file content into the prompt payload
   - In `patch` mode, supports `--extract-diff` to emit raw unified diff only
   - Retries transient provider failures (timeouts/capacity/rate-limit)
@@ -82,6 +91,20 @@ Requirements:
 
 ## Quick start
 
+Single research pass:
+
+```bash
+echo "TASK: identify the likely cause of this auth regression" \
+  | scripts/gemini_delegate.py --mode research
+```
+
+Single answer pass:
+
+```bash
+echo "TASK: explain the likely root cause in 2-3 sentences" \
+  | scripts/gemini_delegate.py --mode answer
+```
+
 Single review pass:
 
 ```bash
@@ -103,7 +126,7 @@ Parallel fan-out:
 
 ```bash
 cat payload.txt \
-  | scripts/gemini_fanout.py --jobs patch review tests alt --concurrency 3
+  | scripts/gemini_fanout.py --jobs answer research review tests alt --concurrency 3
 ```
 
 ## Retry controls
@@ -119,16 +142,16 @@ Both scripts expose retry controls for transient provider instability:
 
 `gemini_delegate.py` also supports model fallback:
 
-- `--model` (primary, default `pro`)
+- `--model` (primary, default `gemini-3-flash-preview`)
 - `--fallback-model` (used on capacity failures, default `auto`)
 
-When fallback is used, the wrapper prints an explicit warning that output quality may differ from `pro`.
+When fallback is used, the wrapper prints an explicit warning that output quality may differ from the primary model.
 
 Example:
 
 ```bash
 echo "TASK: ..." \
-  | scripts/gemini_delegate.py --mode patch --timeout-sec 60 --retry-window-sec 900
+  | scripts/gemini_delegate.py --mode research --timeout-sec 60 --retry-window-sec 900
 ```
 
 ## Concurrency throttle

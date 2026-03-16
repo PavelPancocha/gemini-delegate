@@ -7,7 +7,8 @@ import os
 import sys
 from dataclasses import dataclass
 
-JOBS = ["patch", "review", "tests", "alt"]
+DEFAULT_MODEL = "gemini-3-flash-preview"
+JOBS = ["patch", "review", "tests", "alt", "research", "answer"]
 
 
 @dataclass(frozen=True)
@@ -106,21 +107,7 @@ async def runner(
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Run multiple Gemini delegate jobs in parallel (fan-out).")
-    ap.add_argument("--jobs", nargs="+", default=["review"], choices=JOBS)
-    ap.add_argument("--concurrency", type=int, default=3)
-    ap.add_argument("--timeout-sec", type=int, default=900)
-    ap.add_argument("--model", default="pro")
-    ap.add_argument("--retry-window-sec", type=int, default=600)
-    ap.add_argument("--retry-initial-backoff-sec", type=float, default=5.0)
-    ap.add_argument("--retry-max-backoff-sec", type=float, default=60.0)
-    ap.add_argument("--min-start-interval-sec", type=float, default=20.0)
-    ap.add_argument(
-        "--rate-limit-file",
-        default=os.path.expanduser("~/.cache/gemini-delegate/rate_limit.state"),
-        help="Shared state file for global request pacing.",
-    )
-    args = ap.parse_args()
+    args = build_parser().parse_args()
     if args.concurrency < 1 or args.concurrency > 4:
         print("ERROR: --concurrency must be between 1 and 4.", file=sys.stderr)
         return 2
@@ -157,6 +144,24 @@ def main() -> int:
         print()
 
     return 0 if all(result.rc == 0 for result in results) else 1
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run multiple Gemini delegate jobs in parallel (fan-out).")
+    parser.add_argument("--jobs", nargs="+", default=["review"], choices=JOBS)
+    parser.add_argument("--concurrency", type=int, default=3)
+    parser.add_argument("--timeout-sec", type=int, default=900)
+    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--retry-window-sec", type=int, default=600)
+    parser.add_argument("--retry-initial-backoff-sec", type=float, default=5.0)
+    parser.add_argument("--retry-max-backoff-sec", type=float, default=60.0)
+    parser.add_argument("--min-start-interval-sec", type=float, default=20.0)
+    parser.add_argument(
+        "--rate-limit-file",
+        default=os.path.expanduser("~/.cache/gemini-delegate/rate_limit.state"),
+        help="Shared state file for global request pacing.",
+    )
+    return parser
 
 
 if __name__ == "__main__":

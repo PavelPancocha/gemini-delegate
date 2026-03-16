@@ -1,12 +1,13 @@
 ---
 name: gemini-delegate
-description: Delegate hard reasoning and PATCH proposals to Gemini CLI (headless). Gemini outputs unified diffs only; Codex applies edits and runs tests. Supports parallel fan-out runs (patch/review/tests/alt) and consolidated output.
+description: Delegate well-specified helper tasks to Gemini CLI (headless). Gemini handles answer/research/review/tests/alt or scoped patch proposals, outputs unified diffs only, and Codex applies edits and runs tests.
 ---
 
 ## What this skill is for
 Use when:
-- Task is hard/ambiguous and you want a second high-quality brain.
-- You want a unified diff proposal (Gemini outputs patch; Codex applies).
+- Task is well-specified and chunked down, and you want a fast second opinion.
+- You want bounded answers, research, review, test planning, or alternatives.
+- You want a unified diff proposal for explicitly scoped files.
 - You want parallel roles and then a consolidated summary.
 
 ## Safety boundary
